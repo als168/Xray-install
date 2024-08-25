@@ -1,122 +1,41 @@
 #!/usr/bin/env bash
 
-# The files installed by the script conform to the Filesystem Hierarchy Standard:
-# https://wiki.linuxfoundation.org/lsb/fhs
-
-# The URL of the script project is:
-# https://github.com/XTLS/Xray-install
-
-# The URL of the script is:
-# https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh
-
-# If the script executes incorrectly, go to:
-# https://github.com/XTLS/Xray-install/issues
-
-# You can set this variable whatever you want in shell session right before running this script by issuing:
-# export DAT_PATH='/usr/local/share/xray'
 DAT_PATH=${DAT_PATH:-/usr/local/share/xray}
-
-# You can set this variable whatever you want in shell session right before running this script by issuing:
-# export JSON_PATH='/usr/local/etc/xray'
 JSON_PATH=${JSON_PATH:-/usr/local/etc/xray}
 
-# Set this variable only if you are starting xray with multiple configuration files:
-# export JSONS_PATH='/usr/local/etc/xray'
-
-# Set this variable only if you want this script to check all the systemd unit file:
-# export check_all_service_files='yes'
-
-# Gobal verbals
-
-if [[ -f '/etc/systemd/system/xray.service' ]] && [[ -f '/usr/local/bin/xray' ]]; then
+if [[ -f '/etc/init.d/xray' ]] && [[ -f '/usr/local/bin/xray' ]]; then
   XRAY_IS_INSTALLED_BEFORE_RUNNING_SCRIPT=1
 else
   XRAY_IS_INSTALLED_BEFORE_RUNNING_SCRIPT=0
 fi
 
-# Xray current version
 CURRENT_VERSION=''
-
-# Xray latest release version
 RELEASE_LATEST=''
-
-# Xray latest prerelease/release version
 PRE_RELEASE_LATEST=''
-
-# Xray version will be installed
 INSTALL_VERSION=''
-
-# install
 INSTALL='0'
-
-# install-geodata
 INSTALL_GEODATA='0'
-
-# remove
 REMOVE='0'
-
-# help
 HELP='0'
-
-# check
 CHECK='0'
-
-# --force
 FORCE='0'
-
-# --beta
 BETA='0'
-
-# --install-user ?
 INSTALL_USER=''
-
-# --without-geodata
 NO_GEODATA='0'
-
-# --without-logfiles
 NO_LOGFILES='0'
-
-# --logrotate
 LOGROTATE='0'
-
-# --no-update-service
 N_UP_SERVICE='0'
-
-# --reinstall
 REINSTALL='0'
-
-# --version ?
 SPECIFIED_VERSION=''
-
-# --local ?
 LOCAL_FILE=''
-
-# --proxy ?
 PROXY=''
-
-# --purge
 PURGE='0'
 
 curl() {
   $(type -P curl) -L -q --retry 5 --retry-delay 10 --retry-max-time 60 "$@"
 }
 
-systemd_cat_config() {
-  if systemd-analyze --help | grep -qw 'cat-config'; then
-    systemd-analyze --no-pager cat-config "$@"
-    echo
-  else
-    echo "${aoi}~~~~~~~~~~~~~~~~"
-    cat "$@" "$1".d/*
-    echo "${aoi}~~~~~~~~~~~~~~~~"
-    echo "${red}warning: ${green}The systemd version on the current operating system is too low."
-    echo "${red}warning: ${green}Please consider upgrading systemd or the operating system.${reset}"
-    echo
-  fi
-}
-
 check_if_running_as_root() {
-  # If you want to run as another user, please modify $EUID to be owned by this user
   if [[ "$EUID" -ne '0' ]]; then
     echo "error: You must run this script as root!"
     exit 1
@@ -128,6 +47,7 @@ identify_the_operating_system_and_architecture() {
     echo "error: This operating system is not supported."
     exit 1
   fi
+
   case "$(uname -m)" in
     'i386' | 'i686')
       MACHINE='32'
@@ -179,18 +99,21 @@ identify_the_operating_system_and_architecture() {
       exit 1
       ;;
   esac
+
   if [[ ! -f '/etc/os-release' ]]; then
     echo "error: Don't use outdated Linux distributions."
     exit 1
   fi
-  if [[ -f /.dockerenv ]] || grep -q 'docker\|lxc' /proc/1/cgroup && [[ "$(type -P systemctl)" ]]; then
+
+  if [[ -f /.dockerenv ]] || grep -q 'docker\|lxc' /proc/1/cgroup && [[ "$(type -P rc-service)" ]]; then
     true
-  elif [[ -d /run/systemd/system ]] || grep -q systemd <(ls -l /sbin/init); then
+  elif [[ -d /run/openrc ]] || grep -q openrc <(ls -l /sbin/init); then
     true
   else
-    echo "error: Only Linux distributions using systemd are supported."
+    echo "error: Only Linux distributions using OpenRC are supported."
     exit 1
   fi
+
   if [[ "$(type -P apk)" ]]; then
     PACKAGE_MANAGEMENT_INSTALL='apk add --no-cache'
     PACKAGE_MANAGEMENT_REMOVE='apk del'
@@ -201,7 +124,6 @@ identify_the_operating_system_and_architecture() {
   fi
 }
 
-## Demo function for processing parameters
 judgment_parameters() {
   local local_install='0'
   local temp_version='0'
@@ -265,7 +187,7 @@ judgment_parameters() {
         ;;
       '-u' | '--install-user')
         if [[ -z "$2" ]]; then
-          echo "error: Please specify the install user.}"
+          echo "error: Please specify the install user."
           exit 1
         fi
         INSTALL_USER="$2"
@@ -278,8 +200,8 @@ judgment_parameters() {
         N_UP_SERVICE='1'
         ;;
       '--logrotate')
-        if ! grep -qE '\b([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\b' <<< "$2";then
-          echo "error: Wrong format of time, it should be in the format of 12:34:56, under 10:00:00 should be start with 0, e.g. 01:23:45."
+        if ! grep -qE '\b([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\b' <<< "$2"; then
+          echo "error: Wrong format of time, it should be in the format of 12:34:56."
           exit 1
         fi
         LOGROTATE='1'
@@ -293,24 +215,29 @@ judgment_parameters() {
     esac
     shift
   done
-  if ((INSTALL+INSTALL_GEODATA+HELP+CHECK+REMOVE==0)); then
+
+  if ((INSTALL + INSTALL_GEODATA + HELP + CHECK + REMOVE == 0)); then
     INSTALL='1'
-  elif ((INSTALL+INSTALL_GEODATA+HELP+CHECK+REMOVE>1)); then
+  elif ((INSTALL + INSTALL_GEODATA + HELP + CHECK + REMOVE > 1)); then
     echo 'You can only choose one action.'
     exit 1
   fi
-  if [[ "$INSTALL" -eq '1' ]] && ((temp_version+local_install+REINSTALL>1)); then
+
+  if [[ "$INSTALL" -eq '1' ]] && ((temp_version + local_install + REINSTALL > 1)); then
     echo 'The --version and --local options are mutually exclusive.'
     exit 1
   fi
+
   if [[ "$INSTALL" -eq '1' ]] && [[ -n "$INSTALL_USER" ]] && ! id "$INSTALL_USER" &>/dev/null; then
     echo "error: Install user $INSTALL_USER does not exist."
     exit 1
   fi
+
   if [[ "$INSTALL" -eq '1' ]] && [[ -z "$SPECIFIED_VERSION" && -n "$LOCAL_FILE" ]]; then
     echo 'When specifying --local, the --version option is not required.'
     exit 1
   fi
+
   if [[ "$REMOVE" -eq '1' ]] && [[ -n "$INSTALL_USER" ]] && ! id "$INSTALL_USER" &>/dev/null; then
     echo "error: Install user $INSTALL_USER does not exist."
     exit 1
@@ -327,10 +254,8 @@ check_install_user() {
 }
 
 install_software() {
-  if ! apk info xray &>/dev/null; then
-    echo "Installing required packages..."
-    apk add --no-cache xray
-  fi
+  echo "Installing required packages..."
+  $PACKAGE_MANAGEMENT_INSTALL xray curl jq tar
 }
 
 get_current_version() {
@@ -343,112 +268,134 @@ get_latest_version() {
   if [[ "$BETA" -eq '1' ]]; then
     RELEASE_LATEST=$(curl -sL 'https://api.github.com/repos/XTLS/Xray-core/releases?per_page=100' | jq -r '[.[] | select(.prerelease == true)] | .[0] | .tag_name')
   else
-    RELEASE_LATEST=$(curl -sL 'https://api.github.com/repos/XTLS/Xray-core/releases/latest' | jq -r .tag_name)
+    RELEASE_LATEST=$(curl -sL 'https://api.github.com/repos/XTLS/Xray-core/releases/latest' | jq -r '.tag_name')
   fi
 }
 
-version_gt() {
-  local v1="$1"
-  local v2="$2"
-  [[ "$(printf '%s\n%s' "$v1" "$v2" | sort -V | head -n1)" == "$v2" ]]
-}
-
 download_xray() {
-  local url="https://github.com/XTLS/Xray-core/releases/download/${INSTALL_VERSION}/xray-${MACHINE}-v${INSTALL_VERSION}.tar.gz"
-  echo "Downloading Xray version $INSTALL_VERSION..."
-  curl -L -o xray.tar.gz "$url"
-  curl -L -o xray.tar.gz.sha256 "$url.sha256"
-  sha256sum -c xray.tar.gz.sha256
-}
+  local download_link
+  download_link="https://github.com/XTLS/Xray-core/releases/download/${INSTALL_VERSION}/Xray-linux-${MACHINE}.zip"
 
-decompression() {
-  echo "Decompressing Xray..."
-  tar -xzf xray.tar.gz -C /usr/local/bin
-}
+  echo "Downloading Xray..."
+  curl -L -o "/tmp/xray.zip" "$download_link"
 
-install_file() {
-  cp -a xray /usr/local/bin/xray
+  echo "Verifying download..."
+  curl -sL "https://github.com/XTLS/Xray-core/releases/download/${INSTALL_VERSION}/Xray-linux-${MACHINE}.zip.sha256sum" -o "/tmp/xray.zip.sha256sum"
+  cd /tmp && sha256sum -c xray.zip.sha256sum || exit 1
+  unzip -o xray.zip -d /usr/local/bin/ || exit 1
+  rm -f /tmp/xray.zip /tmp/xray.zip.sha256sum
 }
 
 install_xray() {
-  if [[ "$INSTALL" -eq '1' ]]; then
-    get_current_version
-    get_latest_version
-    if [[ "$FORCE" -eq '0' && "$(version_gt "$RELEASE_LATEST" "$CURRENT_VERSION")" == '1' ]]; then
-      echo "Xray version $RELEASE_LATEST is available, installing..."
-      INSTALL_VERSION="$RELEASE_LATEST"
-      download_xray
-      decompression
-      install_file
-    elif [[ "$FORCE" -eq '1' ]]; then
-      echo "Forcing installation of Xray version $INSTALL_VERSION..."
-      download_xray
-      decompression
-      install_file
-    else
-      echo "Xray is already up-to-date."
-    fi
+  get_latest_version
+  if [[ -z "$INSTALL_VERSION" ]]; then
+    INSTALL_VERSION="$RELEASE_LATEST"
+  fi
+  if [[ "$CURRENT_VERSION" != "$INSTALL_VERSION" ]]; then
+    download_xray
+    install_startup_service_file
+  else
+    echo "Xray is already the latest version."
   fi
 }
 
 install_startup_service_file() {
-  echo "Installing Xray startup service..."
-  cat > /etc/systemd/system/xray.service <<- EOF
-[Unit]
-Description=Xray Service
-Documentation=https://www.v2ray.com/
-After=network.target
+  cat <<EOF > /etc/init.d/xray
+#!/sbin/openrc-run
 
-[Service]
-ExecStart=/usr/local/bin/xray run -c /usr/local/etc/xray/config.json
-Restart=on-failure
-User=nobody
-RestartSec=3
-LimitNOFILE=4096
+description="Xray - A platform for building proxies to bypass network restrictions."
+command="/usr/local/bin/xray"
+command_args="-c /usr/local/etc/xray/config.json"
+command_user="nobody:nogroup"
+pidfile="/run/xray.pid"
 
-[Install]
-WantedBy=multi-user.target
+depend() {
+  after networking
+}
+
 EOF
-  systemctl enable xray
+
+  chmod +x /etc/init.d/xray
+  rc-update add xray default
 }
 
 start_xray() {
   echo "Starting Xray..."
-  systemctl start xray
+  rc-service xray start
 }
 
 stop_xray() {
   echo "Stopping Xray..."
-  systemctl stop xray
+  rc-service xray stop
 }
 
 install_with_logrotate() {
-  if [[ "$LOGROTATE" -eq '1' ]]; then
-    echo "Configuring logrotate for Xray logs..."
-    cat > /etc/logrotate.d/xray <<- EOF
-/var/log/xray/*.log {
-    daily
-    missingok
-    rotate 7
-    compress
-    delaycompress
-    notifempty
-    create 0640 root root
+  cat <<EOF > /etc/logrotate.d/xray
+/usr/local/etc/xray/*.log {
+  daily
+  missingok
+  rotate 14
+  compress
+  notifempty
+  copytruncate
+  delaycompress
+  postrotate
+    rc-service xray reload > /dev/null 2>/dev/null || true
+  endscript
 }
 EOF
-  fi
 }
 
 main() {
   check_if_running_as_root
   identify_the_operating_system_and_architecture
   judgment_parameters
-  check_install_user
-  install_software
-  install_xray
-  install_startup_service_file
-  start_xray
-  install_with_logrotate
+
+  if [[ "$REMOVE" -eq '1' ]]; then
+    stop_xray
+    rc-update del xray default
+    rm -f /etc/init.d/xray
+    rm -rf /usr/local/bin/xray /usr/local/etc/xray /usr/local/share/xray
+    echo "Xray has been removed."
+    exit 0
+  fi
+
+  if [[ "$HELP" -eq '1' ]]; then
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  install                Install Xray."
+    echo "  remove                 Remove Xray."
+    echo "  check                  Check for updates."
+    echo "  --without-geodata      Install without geodata."
+    echo "  --without-logfiles     Install without logrotate."
+    echo "  --version VERSION      Install a specific version."
+    echo "  --local FILE           Install from a local file."
+    echo "  --proxy PROXY          Use a proxy server."
+    echo "  --reinstall            Reinstall Xray."
+    echo "  --logrotate TIME       Configure logrotate with a specified time."
+    echo "  --purge                Purge all Xray data."
+    echo "  --help                 Show this help message."
+    exit 0
+  fi
+
+  if [[ "$CHECK" -eq '1' ]]; then
+    get_current_version
+    get_latest_version
+    if [[ "$CURRENT_VERSION" != "$RELEASE_LATEST" ]]; then
+      echo "A new version of Xray is available: $RELEASE_LATEST"
+    else
+      echo "Xray is up to date."
+    fi
+    exit 0
+  fi
+
+  if [[ "$INSTALL" -eq '1' ]]; then
+    install_software
+    get_current_version
+    install_xray
+    install_with_logrotate
+    start_xray
+  fi
 }
 
 main "$@"
